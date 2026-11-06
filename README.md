@@ -1,4 +1,4 @@
-# ATS-BuildableEventBuildings Against the Storm mod to make event buildings buildable
+# Against the Storm mod to make event buildings buildable
 
 This mod makes buildings that normally only come from events (such as the Finesmith, Homestead and the Flawless, Hallowed and Holy whatever fuildings) available to build. Most of them you only discover as ruins and have to fix them. Others you have to find the blueprint through some event or map mechanic.
 Each building can be set in the config file to be unlocked at the start of every game, added to the pool of buildings you can pick, or left alone. Because these buildings are powerful, their construction cost is also multiplied (1.5x by default), and the multiplier can be changed per building.
