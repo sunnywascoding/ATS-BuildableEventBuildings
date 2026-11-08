@@ -30,9 +30,6 @@ namespace BuildableEventBuildings
         public static Plugin Instance;
         private Harmony harmony;
         public static ManualLogSource Log;
-        private const string GUID = "BuildableEventBuildings";
-        private const string NAME = "BuildableEventBuildings";
-        private const string VERSION = "1.0.0";
 
         // In-game building names that this plugin can manage.
         private static readonly string[] BuildingNames =
@@ -60,12 +57,39 @@ namespace BuildableEventBuildings
         private static readonly Dictionary<string, ConfigEntry<float>> CostMultipliers =
             new Dictionary<string, ConfigEntry<float>>();
 
+        // Enhanced building -> its regular version (names confirmed to exist via the discovery log).
+        private static readonly Dictionary<string, string> RegularVersions = new Dictionary<string, string>
+        {
+            { "Flawless Cellar", "Cellar" },
+            { "Flawless Cooperage", "Cooperage" },
+            { "Flawless Druid", "Druid" },
+            { "Flawless Leatherworks", "Leatherworks" },
+            { "Flawless Rain Mill", "Rain Mill" },
+            { "Flawless Smelter", "Smelter" },
+            { "Hallowed Herb Garden", "Herb Garden" },
+            { "Hallowed SmallFarm", "SmallFarm" },
+            { "Holy Guild House", "Guild House" },
+            { "Holy Market", "Market" },
+            { "Holy Temple", "Temple" }
+        };
+
+        private static readonly Dictionary<string, ConfigEntry<bool>> RemoveRegular =
+            new Dictionary<string, ConfigEntry<bool>>();
+        private static ConfigEntry<bool> RemoveRegularOnPick;
+
         private void Awake()
         {
             Log = Logger;
             Instance = this;
 
             // Config file lives at BepInEx/config/<GUID>.cfg and is created on first run.
+            RemoveRegularOnPick = Config.Bind(
+                "RemoveRegularVersionOnPick",
+                "RemoveRegularVersionOnPick",
+                true,
+                "If true, picking an advanced building (e.g. Flawless Cellar) removes its regular version " +
+                "(e.g. Cellar) from the draft pool.");
+
             foreach (var name in BuildingNames)
             {
                 BuildingConfigs[name] = Config.Bind(
@@ -82,11 +106,20 @@ namespace BuildableEventBuildings
                     new ConfigDescription(
                         "Multiplier applied to this building's construction cost. 1 = vanilla cost.",
                         new AcceptableValueRange<float>(0.1f, 20f)));
+
+                if (RegularVersions.TryGetValue(name, out var regularName))
+                {
+                    RemoveRegular[name] = Config.Bind(
+                        "RemoveRegularVersion",
+                        name,
+                        false,
+                        $"If true, the regular '{regularName}' is removed from the draft pool at the start of a new game.");
+                }
             }
 
             harmony = Harmony.CreateAndPatchAll(typeof(Plugin));
 
-            Log.LogInfo($"{NAME} log v{VERSION} Plugin loaded");
+            Log.LogInfo($"{PluginInfo.PLUGIN_NAME} log v{PluginInfo.PLUGIN_VERSION} Plugin loaded");
         }
 
         private static BuildingMode GetMode(string name) =>
@@ -96,7 +129,7 @@ namespace BuildableEventBuildings
         [HarmonyPostfix]
         private static void HookMainControllerSetup()
         {
-            Log.LogInfo($"Performing game initialization on behalf of {GUID}.");
+            Log.LogInfo($"Performing game initialization on behalf of {PluginInfo.PLUGIN_GUID}.");
 
             foreach (var name in BuildingNames)
             {
@@ -133,13 +166,24 @@ namespace BuildableEventBuildings
             }
         }
 
-        [HarmonyPatch(typeof(GameController), nameof(GameController.StartGame))]
-        [HarmonyPostfix]
-        private static void HookEveryGameStart()
+        private static void RemoveFromPool(BuildingModel regular)
         {
-            // Runs after every game start.
+            var bp = SO.BiomeService.Blueprints;
+            bp.wildcards = bp.wildcards.Where(w => w.building != regular).ToArray();
+            foreach (var range in bp.blueprints)
+                foreach (var set in range.sets)
+                    set.buildings = set.buildings.Where(b => b.building != regular).ToArray();
+            Log.LogInfo($"Removed regular version {regular.Name} from the draft pool.");
+        }
+
+        // The reputation rewards service generates the first draft while it loads, which is before
+        // GameController.StartGame fires. The draft pool must therefore be edited before it.
+        [HarmonyPatch(typeof(ReputationRewardsService), "OnLoading")]
+        [HarmonyPrefix]
+        private static void PrepareDraftPool()
+        {
             var isNewGame = MB.GameSaveService.IsNewGame();
-            Log.LogInfo($"Entered a game. Is this a new game: {isNewGame}.");
+            Log.LogInfo($"Preparing draft pool. Is this a new game: {isNewGame}.");
             if (!isNewGame)
                 return;
 
@@ -153,24 +197,72 @@ namespace BuildableEventBuildings
                 if (building == null)
                     continue;
 
-                switch (mode)
+                if (RemoveRegular.TryGetValue(name, out var removeEntry) && removeEntry.Value &&
+                    RegularVersions.TryGetValue(name, out var regularName))
                 {
-                    case BuildingMode.Unlocked:
-                        SO.GameContentService.Unlock(building);
-                        Log.LogInfo($"Unlocked {building.Name}.");
-                        break;
-
-                    case BuildingMode.Pickable:
-                        if (!SO.BiomeService.Blueprints.wildcards.Any(w => w.building == building))
-                        {
-                            SO.BiomeService.Blueprints.wildcards =
-                                SO.BiomeService.Blueprints.wildcards
-                                    .Append(new BuildingWeightedChance { building = building })
-                                    .ToArray();
-                            Log.LogInfo($"Added {building.Name} to the pickable buildings.");
-                        }
-                        break;
+                    BuildingModel regular = MB.Settings.GetBuilding(regularName);
+                    if (regular != null)
+                        RemoveFromPool(regular);
+                    else
+                        Log.LogWarning($"{name}: regular version '{regularName}' was not found; nothing removed.");
                 }
+
+                if (mode == BuildingMode.Pickable &&
+                    !SO.BiomeService.Blueprints.wildcards.Any(w => w.building == building))
+                {
+                    SO.BiomeService.Blueprints.wildcards =
+                        SO.BiomeService.Blueprints.wildcards
+                            .Append(new BuildingWeightedChance { building = building })
+                            .ToArray();
+                    Log.LogInfo($"Added {building.Name} to the pickable buildings.");
+                }
+            }
+        }
+
+        [HarmonyPatch(typeof(GameContentService), nameof(GameContentService.Unlock))]
+        [HarmonyPostfix]
+        private static void RemoveRegularWhenAdvancedUnlocked(BuildingModel building)
+        {
+            if (!RemoveRegularOnPick.Value)
+                return;
+
+            var name = building.Name;
+            if (!RegularVersions.TryGetValue(name, out var regularName))
+                return;
+
+            BuildingModel regular = MB.Settings.GetBuilding(regularName);
+            if (regular != null)
+            {
+                Log.LogInfo($"{name} was picked; removing regular version '{regularName}' from the draft pool.");
+                RemoveFromPool(regular);
+            }
+            else
+            {
+                Log.LogWarning($"{name}: regular version '{regularName}' was not found; nothing removed.");
+            }
+        }
+
+        [HarmonyPatch(typeof(GameController), nameof(GameController.StartGame))]
+        [HarmonyPostfix]
+        private static void HookEveryGameStart()
+        {
+            // Runs after every game start.
+            var isNewGame = MB.GameSaveService.IsNewGame();
+            Log.LogInfo($"Entered a game. Is this a new game: {isNewGame}.");
+            if (!isNewGame)
+                return;
+
+            foreach (var name in BuildingNames)
+            {
+                if (GetMode(name) != BuildingMode.Unlocked)
+                    continue;
+
+                BuildingModel building = MB.Settings.GetBuilding(name);
+                if (building == null)
+                    continue;
+
+                SO.GameContentService.Unlock(building);
+                Log.LogInfo($"Unlocked {building.Name}.");
             }
         }
     }

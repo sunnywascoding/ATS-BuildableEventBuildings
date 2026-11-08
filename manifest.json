@@ -1,0 +1,9 @@
+{
+    "name": "BuildableEventBuildings",
+    "version_number": "1.0.1",
+    "website_url": "https://github.com/sunnywascoding/ATS-BuildableEventBuildings",
+    "description": "Against the Storm mod to make event buildings buildable",
+    "dependencies": [
+                        "BepInEx-BepInExPack-5.4.2305"
+                    ]
+}
