@@ -1,6 +1,6 @@
 {
     "name": "BuildableEventBuildings",
-    "version_number": "1.0.1",
+    "version_number": "1.0.4",
     "website_url": "https://github.com/sunnywascoding/ATS-BuildableEventBuildings",
     "description": "Against the Storm mod to make event buildings buildable",
     "dependencies": [
